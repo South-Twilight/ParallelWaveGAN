@@ -1,7 +1,9 @@
 # origin link: https://github.com/facebookresearch/fairseq/blob/5aaabf69187c7c1e6913e53ed17a4c92f74b234c/fairseq/models/multires_hubert/multires_hubert.py#L934
 import torch
 import torch.nn as nn
-
+from fairseq.models.wav2vec.wav2vec import norm_block
+import math
+import logging
 
 class ConvAdapter(nn.Module):
     """Conv adapter that combines two modules with different label rate with downsample or upsample.

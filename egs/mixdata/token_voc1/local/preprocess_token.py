@@ -338,9 +338,12 @@ def main():
             if mel.ndim > 1: 
                 mel = mel.transpose(1, 0)
             else:
-                mel = mel.reshape(-1, 1)
-            # mel: (T, 1)
-        logging.info(f'mel({mel.shape})')
+                if args.use_multi_layer:
+                    mel = mel.reshape(-1, args.emb_layer + 1)
+                else:
+                    mel = mel.reshape(-1, 1)
+            # mel: (T, 1) / (T, L)
+        # logging.info(f'mel({mel.shape}): {mel}')
         
         if args.spk2idx is not None:
             spk = utt2spk[utt_id]

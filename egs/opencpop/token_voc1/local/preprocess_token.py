@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Copyright 2019 Tomoki Hayashi
+# Copyright 2024 Yuxun Tang
 #  MIT License (https://opensource.org/licenses/MIT)
 
 """Perform preprocessing and raw feature extraction."""
@@ -179,10 +180,22 @@ def main():
         help="whether to use pretrain model to get feature.",
     )
     parser.add_argument(
+        "--use-multi-layer",
+        default=False,
+        action="store_true",
+        help="whether to use multi layer feature.",
+    )
+    parser.add_argument(
+        "--use-multi-resolution-token",
+        default=False,
+        action="store_true",
+        help="whether to input multi resolution token.",
+    )
+    parser.add_argument(
         "--emb-layer",
         type=int,
         default=1,
-        help="logging level. higher is more logging. (default=1)",
+        help="all layer numbert or specific layer",
     )
     parser.add_argument(
         "--pretrained-model",
@@ -237,25 +250,27 @@ def main():
             return_sampling_rate=True,
         )
 
-    # get token single layer / multi layer
-    if not os.path.isdir(args.text): # single layer token file
-        with open(args.text) as f:
-            lines = [line.strip() for line in f.readlines()]
-        text = {
-            line.split(maxsplit=1)[0]: line.split(maxsplit=1)[1].split() for line in lines
-        }
-    else:  # multi-stream: directory of token files
-        text = {}
-        for fname in os.listdir(args.text):
-            fpath = os.path.join(args.text, fname)
-            with open(fpath, 'r') as f:
+    if args.use_embedding_feats is False:
+        # get token single layer / multi layer
+        logging.info(f'path: {args.text}')
+        if not os.path.isdir(args.text): # single layer token file
+            with open(args.text) as f:
                 lines = [line.strip() for line in f.readlines()]
-            for line in lines:
-                utt_name, tokens = line.split(maxsplit=1) # name, list
-                tokens = tokens.split() 
-                if text.get(utt_name) is None:
-                    text[utt_name] = []
-                text[utt_name].append(tokens)
+            text = {
+                line.split(maxsplit=1)[0]: line.split(maxsplit=1)[1].split() for line in lines
+            }
+        else:  # multi-stream: directory of token files
+            text = {}
+            for fname in os.listdir(args.text):
+                fpath = os.path.join(args.text, fname)
+                with open(fpath, 'r') as f:
+                    lines = [line.strip() for line in f.readlines()]
+                for line in lines:
+                    utt_name, tokens = line.split(maxsplit=1) # name, list
+                    tokens = tokens.split() 
+                    if text.get(utt_name) is None:
+                        text[utt_name] = []
+                    text[utt_name].append(tokens)                    
 
     # load spk2utt file
     if args.utt2spk is not None:
@@ -272,6 +287,10 @@ def main():
 
     # process each data
     for utt_id, (audio, fs) in tqdm(dataset):
+        # if os.path.exists(os.path.join(args.dumpdir, f"{utt_id}.h5")):
+        #     logging.info(f'{utt_id} skip')
+        #     continue
+        logging.info(f'{utt_id} run')
         # check
         assert len(audio.shape) == 1, f"{utt_id} seems to be multi-channel signal."
         assert (
@@ -298,26 +317,54 @@ def main():
             from transformers import AutoModel, Wav2Vec2FeatureExtractor
             pretrained_model = args.pretrained_model
             logging.info(f'model: {pretrained_model}')
-            model = AutoModel.from_pretrained(pretrained_model, cache_dir='/data3/tyx/pretrain_model')
-            processor = Wav2Vec2FeatureExtractor.from_pretrained(pretrained_model, cache_dir='/data3/tyx/pretrain_model') 
-            # model = AutoModel.from_pretrained(pretrained_model, cache_dir='/data3/tyx/pretrain_model')
-            # processor = Wav2Vec2CTCTokenizer.from_pretrained(pretrained_model, cache_dir='/data3/tyx/pretrain_model') 
+            model = AutoModel.from_pretrained(pretrained_model)
+            processor = Wav2Vec2FeatureExtractor.from_pretrained(pretrained_model) 
+            
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model.to(device)
             inputs = processor(audio, sampling_rate=fs, return_tensors="pt")
-            outputs = model(**inputs, output_hidden_states=True)
+            def move_to_device(dict, device):
+                for key in dict:
+                    dict[key] = dict[key].to(device)
+                return dict
+            inputs = move_to_device(inputs, device)
+            with torch.no_grad():
+                outputs = model(**inputs, output_hidden_states=True)
+            
             features = outputs.hidden_states
-            mel = features[args.emb_layer].squeeze(0).detach().numpy()
-            # mel: (T, 1024) 
-        else:
-            # use hubert index instead of mel
-            mel = np.array(text[utt_id]).astype(np.int64)
-            if mel.ndim > 1: 
-                mel = mel.transpose(1, 0)
+            if args.use_multi_layer:
+                mel = torch.stack(features[: args.emb_layer + 1], 0)
+                # mel input as (L, 1, T, C)
+                mel = mel.squeeze(1).transpose(0, 1).cpu().detach().numpy()
+                # Output mel as (T, L, C)
             else:
-                mel = mel.reshape(-1, 1)
-            # mel: (T, 1)
-        # logging.info(f'mel({mel.shape})')
+                mel = features[args.emb_layer].squeeze(0).cpu().detach().numpy()
+                # Output mel as (T, C) 
+        else:
+            if not args.use_multi_resolution_token:
+                # use hubert index instead of mel
+                mel = np.array(text[utt_id]).astype(np.int64)
+                if mel.ndim > 1: 
+                    mel = mel.transpose(1, 0)
+                else:
+                    mel = mel.reshape(-1, 1)
+                # mel input as (T, 1)
+                if args.use_multi_layer:
+                    mel = mel.reshape(-1, args.emb_layer + 1)
+            else:
+                #NOTE(Yuxun): source resolution is the finest grained 
+                resolution = config['generator_params']['resolution']
+                resolution = sorted(resolution)
+                logging.info(f'Origin resolution of feature is {resolution[0]}')
+                rs_token = sorted(text[utt_id], key=len, reverse=True)
+                mel = np.array(rs_token[0]).astype(np.int64)
+                
+        logging.info(f'mel({mel.shape})')
+        # logging.info(f'mel: {mel}')
         
         if args.spk2idx is not None:
+            if args.use_multi_resolution_token:
+                logging.warn("It doesn't support speaker embedding now when using multi reoslution features.")
             spk = utt2spk[utt_id]
             if spk in spk2idx:
                 idx = spk2idx[spk]
@@ -375,11 +422,26 @@ def main():
                 "wave",
                 audio.astype(np.float32),
             )
-            write_hdf5(
-                os.path.join(args.dumpdir, f"{utt_id}.h5"),
-                "feats",
-                mel.astype(np.float32),
-            )
+            if not args.use_multi_resolution_token:
+                write_hdf5(
+                    os.path.join(args.dumpdir, f"{utt_id}.h5"),
+                    "feats",
+                    mel.astype(np.float32),
+                )
+            else:
+                for rs, feat in zip(resolution, rs_token):
+                    mel = np.array(feat).astype(np.float32)
+                    mel = mel.reshape(-1, 1)
+                    write_hdf5(
+                        os.path.join(args.dumpdir, f"{utt_id}.h5"),
+                        f"feats-{rs}",
+                        mel,
+                    )
+                write_hdf5(
+                    os.path.join(args.dumpdir, f"{utt_id}.h5"),
+                    f"resolution",
+                    np.array(resolution).astype(np.int32),
+                )
             if args.use_f0:
                 write_hdf5(
                     os.path.join(args.dumpdir, f"{utt_id}.h5"),

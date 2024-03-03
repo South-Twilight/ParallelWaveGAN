@@ -21,11 +21,12 @@ from parallel_wavegan.datasets import (
     AudioDataset,
     AudioSCPDataset,
     MelDataset,
+    MRTokenDataset,
     MelF0ExcitationDataset,
     MelSCPDataset,
     MelF0Dataset,
 )
-from parallel_wavegan.utils import load_model, read_hdf5
+from parallel_wavegan.utils import load_model, read_hdf5, write_hdf5
 
 
 def main():
@@ -103,6 +104,26 @@ def main():
         action="store_true",
         help="whether to use f0 sequence.",
     )
+    parser.add_argument(
+        "--store-feature",
+        default=False,
+        action="store_true",
+        help="whether to store feature.",
+    )
+    parser.add_argument(
+        "--storedir",
+        default=None,
+        type=str,
+        help=(
+            "directory to store feature."
+        ),
+    )
+    parser.add_argument(
+        "--use-multi-resolution-token",
+        default=False,
+        action="store_true",
+        help="whether to use multi resolution_token.",
+    )
     args = parser.parse_args()
 
     # set logger
@@ -179,6 +200,9 @@ def main():
                     f0_load_fn = lambda x: read_hdf5(x, "f0")  # NOQA
                     excitation_query = "*.h5"
                     excitation_load_fn = lambda x: read_hdf5(x, "excitation")  # NOQA
+                if args.use_multi_resolution_token:
+                    resolution_query = "*.h5"
+                    resolution_load_fn = lambda x: read_hdf5(x, "resolution")
             elif config["format"] == "npy":
                 mel_query = "*-feats.npy"
                 mel_load_fn = np.load
@@ -203,12 +227,21 @@ def main():
                     return_utt_id=True,
                 )
             elif not use_f0_and_excitation:
-                dataset = MelDataset(
-                    args.dumpdir,
-                    mel_query=mel_query,
-                    mel_load_fn=mel_load_fn,
-                    return_utt_id=True,
-                )
+                if args.use_multi_resolution_token:
+                    dataset = MRTokenDataset(
+                        args.dumpdir,
+                        mel_query=mel_query,
+                        resolution_query=resolution_query,
+                        resolution_load_fn=resolution_load_fn,
+                        return_utt_id=True,
+                    )
+                else:
+                    dataset = MelDataset(
+                        args.dumpdir,
+                        mel_query=mel_query,
+                        mel_load_fn=mel_load_fn,
+                        return_utt_id=True,
+                    )
             else:
                 dataset = MelF0ExcitationDataset(
                     root_dir=args.dumpdir,
@@ -245,7 +278,11 @@ def main():
                     utt_id, c, f0, excitation = items
                 batch = dict(normalize_before=args.normalize_before)
                 if c is not None:
-                    c = torch.tensor(c, dtype=torch.float).to(device)
+                    if isinstance(c, dict):
+                        for key, value in c.items():
+                            c[key] = torch.tensor(value, dtype=torch.float).to(device)
+                    else:
+                        c = torch.tensor(c, dtype=torch.float).to(device)
                     batch.update(c=c)
                 if f0 is not None:
                     f0 = torch.tensor(f0, dtype=torch.float).to(device)
@@ -253,19 +290,54 @@ def main():
                 if excitation is not None:
                     excitation = torch.tensor(excitation, dtype=torch.float).to(device)
                     batch.update(excitation=excitation)
-                start = time.time()
-                y = model.inference(**batch).view(-1)
-                rtf = (time.time() - start) / (len(y) / config["sampling_rate"])
-                pbar.set_postfix({"RTF": rtf})
-                total_rtf += rtf
+                if args.store_feature:
+                    batch.update(store_feature=True)
+                    y = model.inference(**batch)
+                    if config["format"] == "hdf5":
+                        # Tensor for single resolution, dict for multi resolution
+                        if isinstance(y, torch.Tensor):
+                            # y input as [B, C, T]
+                            y = y.squeeze(0).cpu().numpy().astype(np.float32)
+                            # item in y should input as [T, C]
+                            write_hdf5(
+                                os.path.join(args.storedir, f"{utt_id}.h5"),
+                                "feats",
+                                y,
+                            )
+                        elif isinstance(y, dict):
+                            # value of y input as [B, T, C]
+                            rs = []
+                            for key, value in y.items():
+                                feat = value.squeeze(0).cpu().numpy().astype(np.float32)
+                                rs.append(key)
+                                # logging.info(f'{key}: {feat.shape}') 
+                                # item in y should input as [T, C]
+                                write_hdf5(
+                                    os.path.join(args.storedir, f"{utt_id}.h5"),
+                                    f"feats-{key}",
+                                    feat,
+                                )
+                            rs = np.array(rs)
+                            write_hdf5(
+                                os.path.join(args.storedir, f"{utt_id}.h5"),
+                                f"resolution",
+                                rs.astype(np.int32),
+                            )
+                                
+                else:
+                    start = time.time()
+                    y = model.inference(**batch).view(-1)
+                    rtf = (time.time() - start) / (len(y) / config["sampling_rate"])
+                    pbar.set_postfix({"RTF": rtf})
+                    total_rtf += rtf
 
-                # save as PCM 16 bit wav file
-                sf.write(
-                    os.path.join(config["outdir"], f"{utt_id}_gen.wav"),
-                    y.cpu().numpy(),
-                    config["sampling_rate"],
-                    "PCM_16",
-                )
+                    # save as PCM 16 bit wav file
+                    sf.write(
+                        os.path.join(config["outdir"], f"{utt_id}_gen.wav"),
+                        y.cpu().numpy(),
+                        config["sampling_rate"],
+                        "PCM_16",
+                    )
 
         # report average RTF
         logging.info(

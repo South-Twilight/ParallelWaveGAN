@@ -26,6 +26,7 @@ db_root=/data3/tyx/dataset/opencpop # direcotry including wavfiles (MODIFY BY YO
                           # │   ...
                           # └── utt_N.wav
 dumpdir=dump           # directory to dump features
+dumpdir_token=dump_token
 
 # training related setting
 tag=""     # tag for directory to save model
@@ -42,12 +43,18 @@ dev_set="dev"           # name of development data direcotry
 eval_set="test"         # name of evaluation data direcotry
 
 token_text=""
-use_f0=true                    # whether to add f0 
-use_embedding_feats=false      # whether to use pretrain feature as input
+
+use_f0=false                    # whether to add f0 
+use_embedding_feats=true      # whether to use pretrain feature as input
 pretrained_model="facebook/hubert-base-ls960"      # pre-trained model (confirm it on Huggingface)
+use_multi_layer=true
 emb_layer=6
+
 fs=16000
-subexp="exp"
+subexp=exp
+
+use_multi_resolution_token=false
+
 
 # shellcheck disable=SC1091
 . utils/parse_options.sh || exit 1;
@@ -82,6 +89,11 @@ if [ "${stage}" -le 0 ] && [ "${stop_stage}" -ge 0 ]; then
     tail -n $dev_num data/${train_set}/utt2spk > data/${dev_set}/utt2spk.tmp
     mv data/${dev_set}/utt2spk.tmp data/${dev_set}/utt2spk
     mv data/${train_set}/utt2spk.tmp data/${train_set}/utt2spk
+
+    head -n $train_num data/${train_set}/utt2num_samples > data/${train_set}/utt2num_samples.tmp
+    tail -n $dev_num data/${train_set}/utt2num_samples > data/${dev_set}/utt2num_samples.tmp
+    mv data/${dev_set}/utt2num_samples.tmp data/${dev_set}/utt2num_samples
+    mv data/${train_set}/utt2num_samples.tmp data/${train_set}/utt2spk
 fi
 
 if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
@@ -108,7 +120,8 @@ EOF
     fi
     # extract raw features
     pids=()
-    for name in "${train_set}" "${dev_set}" "${eval_set}"; do
+    # for name in "${train_set}" "${dev_set}" "${eval_set}"; do
+    for name in "${eval_set}"; do
     (
         [ ! -e "${dumpdir}/${name}/raw" ] && mkdir -p "${dumpdir}/${name}/raw"
         echo "Feature extraction start. See the progress via ${dumpdir}/${name}/raw/preprocessing.*.log."
@@ -118,12 +131,19 @@ EOF
         if [ ${use_f0} == true ]; then
             _opts+="--use-f0 "
         fi
+        if [ ${use_multi_layer} == "true" ]; then
+            _opts+="--use-multi-layer "
+        fi
         if [ ${use_embedding_feats} == "true" ]; then
             _opts+="--use-embedding-feats "
             _opts+="--pretrained-model ${pretrained_model} "
             _opts+="--emb-layer ${emb_layer} "
         fi
+        if [ $use_multi_resolution_token == true ]; then
+            _opts+="--use-multi-resolution-token "
+        fi
 
+        # preprocess embedding feature instead of token
         ${train_cmd} JOB=1:${n_jobs} "${dumpdir}/${name}/raw/preprocessing.JOB.log" \
             local/preprocess_token.py \
                 --config "${conf}" \
@@ -154,10 +174,15 @@ if [ "${stage}" -le 2 ] && [ "${stop_stage}" -ge 2 ]; then
     else
         train="parallel-wavegan-train"
     fi
+    
     _opts=
     if [ ${use_f0} == true ]; then
         _opts+="--use-f0 "
     fi
+    if [ $use_multi_resolution_token == true ]; then
+        _opts+="--use-multi-resolution-token "
+    fi
+
     # shellcheck disable=SC2012
     resume="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     echo "Training start. See the progress via ${expdir}/train.log."
@@ -178,15 +203,21 @@ if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
     [ -z "${checkpoint}" ] && checkpoint="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     outdir="${expdir}/wav/$(basename "${checkpoint}" .pkl)"
     pids=()
-    for name in "${dev_set}" "${eval_set}"; do
+    for name in "${eval_set}"; do
+    # for name in "${dev_set}" "${eval_set}"; do
     (
         [ ! -e "${outdir}/${name}" ] && mkdir -p "${outdir}/${name}"
         [ "${n_gpus}" -gt 1 ] && n_gpus=1
         echo "Decoding start. See the progress via ${outdir}/${name}/decode.log."
+
         _opts=
         if [ ${use_f0} == true ]; then
             _opts+="--use-f0 "
         fi
+        if [ $use_multi_resolution_token == true ]; then
+            _opts+="--use-multi-resolution-token "
+        fi
+
         ${cuda_cmd} --gpu "${n_gpus}" "${outdir}/${name}/decode.log" \
             parallel-wavegan-decode \
                 --dumpdir "${dumpdir}/${name}/raw" \
@@ -215,7 +246,7 @@ if [ "${stage}" -le 4 ] && [ "${stop_stage}" -ge 4 ]; then
         echo "Begin Scoring for MCD metrics on ${dset}, results are written under ${_dir}/MCD_res"
 
         mkdir -p "${_dir}/MCD_res"
-        python utils/evaluate_mcd.py \
+        python utils/py_utils/evaluate_mcd.py \
             ${_gen_wavdir} \
             ${_gt_wavscp} \
             --outdir "${_dir}/MCD_res"
@@ -224,7 +255,7 @@ if [ "${stage}" -le 4 ] && [ "${stop_stage}" -ge 4 ]; then
         echo "Begin Scoring for F0 related metrics on ${dset}, results are written under ${_dir}/F0_res"
 
         mkdir -p "${_dir}/F0_res"
-        python utils/evaluate_f0.py \
+        python utils/py_utils/evaluate_f0.py \
             ${_gen_wavdir} \
             ${_gt_wavscp} \
             --outdir "${_dir}/F0_res"

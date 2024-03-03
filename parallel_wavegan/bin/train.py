@@ -17,6 +17,7 @@ import numpy as np
 import soundfile as sf
 import torch
 import yaml
+import math
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -31,6 +32,7 @@ from parallel_wavegan.datasets import (
     AudioMelF0ExcitationDataset,
     AudioMelSCPDataset,
     AudioSCPDataset,
+    AudioMRTokenlDataset
 )
 from parallel_wavegan.layers import PQMF
 from parallel_wavegan.losses import (
@@ -589,7 +591,16 @@ class Trainer(object):
         if isinstance(inputs, torch.Tensor):
             x = inputs.to(self.device)
         elif isinstance(inputs, (tuple, list)):
-            x = [None if x is None else x.to(self.device) for x in inputs]
+            x = []
+            for x_item in inputs:
+                if x_item is None:
+                    x.append(None)
+                elif isinstance(x_item, dict):
+                    for key, value in x_item.items():
+                        x_item[key] = value.to(self.device)
+                    x.append(x_item)
+                else:
+                    x.append(x_item.to(self.device))
         else:
             raise ValueError(f"Not supported type ({type(inputs)}).")
 
@@ -944,6 +955,180 @@ class Collater(object):
         return pad
 
 
+class Collater_MR(Collater):
+    """Customized collater for Pytorch DataLoader in training.
+        For multi-resolution specified.
+    """
+
+    def __init__(
+        self,
+        batch_max_steps=20480,
+        hop_size=256,
+        aux_context_window=2,
+        use_noise_input=False,
+        use_f0=False,
+        use_f0_and_excitation=False,
+        use_multi_resolution_token=False,
+        use_aux_input=True,
+        use_duration=False,
+        use_global_condition=False,
+        use_local_condition=False,
+        pad_value=0,
+    ):
+        """Initialize customized collater for PyTorch DataLoader.
+
+        Args:
+            batch_max_steps (int): The maximum length of input signal in batch.
+            hop_size (int): Hop size of auxiliary features.
+            aux_context_window (int): Context window size for auxiliary feature conv.
+            use_noise_input (bool): Whether to use noise input.
+            use_f0_and_excitation (bool): Whether to use f0 and ext. input.
+            use_aux_input (bool): Whether to use auxiliary input.
+            use_duration (bool): Whether to use duration for duration prediction.
+            use_global_condition (bool): Whether to use global conditioning.
+            use_local_condition (bool): Whether to use local conditioning.
+
+        """
+        super().__init__(
+            batch_max_steps=batch_max_steps,
+            hop_size=hop_size,
+            aux_context_window=aux_context_window,
+            use_noise_input=use_noise_input,
+            use_f0=use_f0,
+            use_f0_and_excitation=use_f0_and_excitation,
+            use_aux_input=use_aux_input,
+            use_duration=use_duration,
+            use_global_condition=use_global_condition,
+            use_local_condition=use_local_condition,
+            pad_value=pad_value,
+        )
+        self.use_multi_resolution_token = use_multi_resolution_token
+        
+        
+    def __call__(self, batch):
+        """Convert into batch tensors.
+
+        Args:
+            batch (list): list of tuple of the pair of audio and features.
+
+        Returns:
+            Tuple: Tuple of Gaussian noise batch (B, 1, T) and auxiliary feature
+                batch (B, C, T'), where T = (T' - 2 * aux_context_window) * hop_size.
+                If use_noise_input = False, Gaussian noise batch is not included.
+                If use_aux_input = False, auxiliary feature batch is not included.
+                If both use_noise_input and use_aux_input to False, this tuple is
+                not returned.
+            Tensor: Target signal batch (B, 1, T).
+
+        """
+        if self.use_aux_input:
+            #################################
+            #          MEL2WAV CASE         #
+            #################################
+            # check length
+            resolution = batch[0][1][0]
+            src_rs = resolution[0]
+            batch = [
+                self._adjust_length(*b) for b in batch if len(b[1][src_rs]) > self.mel_threshold
+            ]
+            xs = [b[0] for b in batch]
+            cs_rs = {}
+            for rs in resolution:
+                cs = [b[1][rs] for b in batch]
+                cs_rs[rs] = cs
+            if self.use_f0:
+                fs = [b[2] for b in batch]
+            if self.use_f0_and_excitation:
+                fs, es = [b[2] for b in batch], [b[3] for b in batch]
+
+            # make batch with random cut
+            cs = cs_rs[src_rs]
+            c_lengths = [len(c) for c in cs]
+            start_frames = np.array(
+                [
+                    np.random.randint(self.start_offset, cl + self.end_offset)
+                    for cl in c_lengths
+                ]
+            )
+            c_starts = start_frames - self.aux_context_window
+            c_ends = start_frames + self.batch_max_frames + self.aux_context_window
+            select_len = self.batch_max_frames + self.aux_context_window
+            c_batch = {}
+            for rs in resolution:
+                scl = rs / src_rs
+                c_starts_rs = (c_starts // scl).astype(np.int32)
+                min_len = np.ceil((select_len) / scl).astype(np.int32)
+                c_ends_rs = c_starts_rs + min_len
+                cs = cs_rs[rs]
+                c_batch[rs] = np.array([c[start:end] for c, start, end in zip(cs, c_starts_rs, c_ends_rs)])
+
+            
+            x_starts = start_frames * self.hop_size
+            x_ends = x_starts + self.batch_max_steps
+            y_batch = [x[start:end] for x, start, end in zip(xs, x_starts, x_ends)]
+            y_batch = np.array(y_batch)
+            y_batch = torch.tensor(y_batch, dtype=torch.float).unsqueeze(1)  # (B, 1, T)
+
+            # convert each batch to tensor, asuume that each item in batch has the same length
+            if self.use_f0_and_excitation:
+                f_batch = [f[start:end] for f, start, end in zip(fs, c_starts, c_ends)]
+                e_batch = [e[start:end] for e, start, end in zip(es, c_starts, c_ends)]
+                f_batch, e_batch = np.array(f_batch), np.array(e_batch)
+                f_batch = torch.tensor(f_batch, dtype=torch.float).unsqueeze(
+                    1
+                )  # (B, 1, T')
+                e_batch = torch.tensor(e_batch, dtype=torch.float)  # (B, 1, T', C')
+                e_batch = e_batch.reshape(e_batch.shape[0], 1, -1)  # (B, 1, T' * C')
+                
+            if self.use_f0:
+                f_batch = [f[start:end] for f, start, end in zip(fs, c_starts, c_ends)]
+                f_batch = np.array(f_batch)
+                f_batch = torch.tensor(f_batch, dtype=torch.float).unsqueeze(
+                    1
+                )  # (B, 1, T')
+
+            # process data without duration prediction
+            for rs in resolution:
+                c_batch[rs] = torch.tensor(c_batch[rs], dtype=torch.float).transpose(1, -1)  # (B, C, T')
+                # logging.info(f'c-{rs}: {c_batch[rs].shape}')
+
+            input_items = (c_batch,)
+            if self.use_f0_and_excitation:
+                input_items = input_items + (f_batch, e_batch)
+            if self.use_f0:
+                input_items = input_items + (f_batch,)
+
+            return input_items, y_batch
+        else:
+            raise NotImplementedError(
+                "Only mel2wav case is accepted for multi-resolution feature."
+            )
+            
+    def _adjust_length(self, x, c, f0=None, excitation=None):
+        """Adjust the audio and feature lengths.
+
+        Note:
+            Basically we assume that the length of x and c are adjusted
+            through preprocessing stage, but if we use other library processed
+            features, this process will be needed.
+
+        """
+        resolution = c[0]
+        src_rs = resolution[0]
+        if len(x) < len(c[src_rs]) * self.hop_size:
+            x = np.pad(x, (0, len(c[src_rs]) * self.hop_size - len(x)), mode="edge")
+
+        # check the legnth is valid
+        assert len(x) == len(c[src_rs]) * self.hop_size
+
+        if f0 is not None and excitation is not None:
+            return x, c, f0, excitation
+        elif f0 is not None and excitation is None:
+            return x, c, f0
+        else:
+            return x, c
+
+
 def main():
     """Run training process."""
     parser = argparse.ArgumentParser(
@@ -1056,6 +1241,12 @@ def main():
         help="whether to use f0 sequence.",
     )
     parser.add_argument(
+        "--use-multi-resolution-token",
+        default=False,
+        action="store_true",
+        help="whether to use multi resolution_token.",
+    )
+    parser.add_argument(
         "--rank",
         "--local_rank",
         default=0,
@@ -1158,6 +1349,9 @@ def main():
             if args.use_f0:
                 f0_query = "*.h5"
                 f0_load_fn = lambda x: read_hdf5(x, "f0")  # NOQA
+            if args.use_multi_resolution_token:
+                resolution_query = "*.h5"
+                resolution_load_fn = lambda x: read_hdf5(x, "resolution")
             if use_local_condition:
                 local_query = "*.h5"
                 local_load_fn = lambda x: read_hdf5(x, "local")  # NOQA
@@ -1210,19 +1404,33 @@ def main():
             )
         elif not use_f0_and_excitation:
             if use_aux_input:
-                train_dataset = AudioMelDataset(
-                    root_dir=args.train_dumpdir,
-                    audio_query=audio_query,
-                    audio_load_fn=audio_load_fn,
-                    mel_query=mel_query,
-                    mel_load_fn=mel_load_fn,
-                    local_query=local_query,
-                    local_load_fn=local_load_fn,
-                    global_query=global_query,
-                    global_load_fn=global_load_fn,
-                    mel_length_threshold=mel_length_threshold,
-                    allow_cache=config.get("allow_cache", False),  # keep compatibility
-                )
+                if args.use_multi_resolution_token:
+                    train_dataset = AudioMRTokenlDataset(
+                        root_dir=args.train_dumpdir,
+                        mel_query=mel_query,
+                        resolution_query=resolution_query,
+                        resolution_load_fn=resolution_load_fn,
+                        local_query=local_query,
+                        local_load_fn=local_load_fn,
+                        global_query=global_query,
+                        global_load_fn=global_load_fn,
+                        mel_length_threshold=mel_length_threshold,
+                        allow_cache=config.get("allow_cache", False),  # keep compatibility
+                    )
+                else:
+                    train_dataset = AudioMelDataset(
+                        root_dir=args.train_dumpdir,
+                        audio_query=audio_query,
+                        audio_load_fn=audio_load_fn,
+                        mel_query=mel_query,
+                        mel_load_fn=mel_load_fn,
+                        local_query=local_query,
+                        local_load_fn=local_load_fn,
+                        global_query=global_query,
+                        global_load_fn=global_load_fn,
+                        mel_length_threshold=mel_length_threshold,
+                        allow_cache=config.get("allow_cache", False),  # keep compatibility
+                    )
             else:
                 train_dataset = AudioDataset(
                     root_dir=args.train_dumpdir,
@@ -1294,19 +1502,33 @@ def main():
                 )
         elif not use_f0_and_excitation:
             if use_aux_input:
-                dev_dataset = AudioMelDataset(
-                    root_dir=args.dev_dumpdir,
-                    audio_query=audio_query,
-                    audio_load_fn=audio_load_fn,
-                    mel_query=mel_query,
-                    mel_load_fn=mel_load_fn,
-                    local_query=local_query,
-                    local_load_fn=local_load_fn,
-                    global_query=global_query,
-                    global_load_fn=global_load_fn,
-                    mel_length_threshold=mel_length_threshold,
-                    allow_cache=config.get("allow_cache", False),  # keep compatibility
-                )
+                if args.use_multi_resolution_token:
+                    dev_dataset = AudioMRTokenlDataset(
+                        root_dir=args.train_dumpdir,
+                        mel_query=mel_query,
+                        resolution_query=resolution_query,
+                        resolution_load_fn=resolution_load_fn,
+                        local_query=local_query,
+                        local_load_fn=local_load_fn,
+                        global_query=global_query,
+                        global_load_fn=global_load_fn,
+                        mel_length_threshold=mel_length_threshold,
+                        allow_cache=config.get("allow_cache", False),  # keep compatibility
+                    )
+                else:
+                    dev_dataset = AudioMelDataset(
+                        root_dir=args.dev_dumpdir,
+                        audio_query=audio_query,
+                        audio_load_fn=audio_load_fn,
+                        mel_query=mel_query,
+                        mel_load_fn=mel_load_fn,
+                        local_query=local_query,
+                        local_load_fn=local_load_fn,
+                        global_query=global_query,
+                        global_load_fn=global_load_fn,
+                        mel_length_threshold=mel_length_threshold,
+                        allow_cache=config.get("allow_cache", False),  # keep compatibility
+                    )
             else:
                 dev_dataset = AudioDataset(
                     root_dir=args.dev_dumpdir,
@@ -1371,21 +1593,39 @@ def main():
     logging.info(f"The number of development files = {len(dev_dataset)}.")
 
     # get data loader
-    collater = Collater(
-        batch_max_steps=config["batch_max_steps"],
-        hop_size=config.get("hop_size", None),
-        aux_context_window=config["generator_params"].get("aux_context_window", 0),
-        use_f0=args.use_f0,
-        use_f0_and_excitation=use_f0_and_excitation,
-        use_noise_input=use_noise_input,
-        use_aux_input=use_aux_input,
-        use_duration=use_duration,
-        use_global_condition=use_global_condition,
-        use_local_condition=use_local_condition,
-        pad_value=config["generator_params"].get(
-            "num_embs", 0
-        ),  # assume 0-based discrete symbol
-    )
+    if not args.use_multi_resolution_token:
+        collater = Collater(
+            batch_max_steps=config["batch_max_steps"],
+            hop_size=config.get("hop_size", None),
+            aux_context_window=config["generator_params"].get("aux_context_window", 0),
+            use_f0=args.use_f0,
+            use_f0_and_excitation=use_f0_and_excitation,
+            use_noise_input=use_noise_input,
+            use_aux_input=use_aux_input,
+            use_duration=use_duration,
+            use_global_condition=use_global_condition,
+            use_local_condition=use_local_condition,
+            pad_value=config["generator_params"].get(
+                "num_embs", 0
+            ),  # assume 0-based discrete symbol
+        )
+    else:
+        collater = Collater_MR(
+            batch_max_steps=config["batch_max_steps"],
+            hop_size=config.get("hop_size", None),
+            aux_context_window=config["generator_params"].get("aux_context_window", 0),
+            use_f0=args.use_f0,
+            use_f0_and_excitation=use_f0_and_excitation,
+            use_multi_resolution_token=args.use_multi_resolution_token,
+            use_noise_input=use_noise_input,
+            use_aux_input=use_aux_input,
+            use_duration=use_duration,
+            use_global_condition=use_global_condition,
+            use_local_condition=use_local_condition,
+            pad_value=config["generator_params"].get(
+                "num_embs", 0
+            ),  # assume 0-based discrete symbol
+        )
     sampler = {"train": None, "dev": None}
     if args.distributed:
         # setup sampler for distributed training
