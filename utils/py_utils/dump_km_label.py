@@ -140,11 +140,15 @@ def dump_label(
             wspecifier,
             filetype=out_filetype,
         ) as writer:
+            flag = False
             for utt, feat in file_reader_helper(rspecifier, in_filetype):
                 if feat.ndim == 3:
                     reshape_feat = feat.reshape(-1, feat.shape[-1])
                 else:
                     reshape_feat = feat
+                if flag is True or reshape_feat.shape[0] == 768:
+                    reshape_feat = reshape_feat.transpose()
+                    flag = True
                 lab = apply_kmeans(reshape_feat)
                 writer[utt] = lab
     # else:

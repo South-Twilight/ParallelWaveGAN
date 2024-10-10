@@ -89,7 +89,11 @@ def get_km_model(
 
 def load_feature_shard(rspecifier, in_filetype, percent):
     feats = []
+    flag = False
     for utt, feat in file_reader_helper(rspecifier, in_filetype):
+        if flag is True or feat.shape[0] == 768:
+            feat = feat.transpose()
+            flag = True
         feats.append(feat)
     if percent < 0:
         return np.concatenate(feats, axis=0)

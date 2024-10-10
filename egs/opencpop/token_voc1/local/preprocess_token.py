@@ -203,6 +203,12 @@ def main():
         default="facebook/hubert-base-ls960",
         help="pretrained model for embedding feature",
     )
+    parser.add_argument(
+        "--skip_existed_file",
+        type=str,
+        default=False,
+        action="store_true"
+    )
     args = parser.parse_args()
 
     # set logger
@@ -287,10 +293,11 @@ def main():
 
     # process each data
     for utt_id, (audio, fs) in tqdm(dataset):
-        # if os.path.exists(os.path.join(args.dumpdir, f"{utt_id}.h5")):
-        #     logging.info(f'{utt_id} skip')
-        #     continue
+        if args.skip_existed_file and os.path.exists(os.path.join(args.dumpdir, f"{utt_id}.h5")):
+            logging.info(f'{utt_id} skip')
+            continue
         logging.info(f'{utt_id} run')
+        
         # check
         assert len(audio.shape) == 1, f"{utt_id} seems to be multi-channel signal."
         assert (
@@ -356,7 +363,10 @@ def main():
                 resolution = config['generator_params']['resolution']
                 resolution = sorted(resolution)
                 logging.info(f'Origin resolution of feature is {resolution[0]}')
-                rs_token = sorted(text[utt_id], key=len, reverse=True)
+                rs_token = text[utt_id]
+                if not isinstance(text[utt_id][0], list):
+                    rs_token = [rs_token]
+                rs_token = sorted(rs_token, key=len, reverse=True)
                 mel = np.array(rs_token[0]).astype(np.int64)
                 
         logging.info(f'mel({mel.shape})')
@@ -432,6 +442,8 @@ def main():
                 for rs, feat in zip(resolution, rs_token):
                     mel = np.array(feat).astype(np.float32)
                     mel = mel.reshape(-1, 1)
+                    logging.info(f'{rs}: {mel.shape}')
+                    logging.info(f'mel: {mel.shape}')
                     write_hdf5(
                         os.path.join(args.dumpdir, f"{utt_id}.h5"),
                         f"feats-{rs}",

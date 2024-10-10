@@ -1,6 +1,8 @@
 # This configuration is based on HiFiGAN V1, derived
 # from official repository (https://github.com/jik876/hifi-gan).
 
+# derived hifigan_token_16k_nodp.v1.yaml
+
 # for 16k pre-trained model token, like HuBERT, WavLM, XSL-R...
 
 ###########################################################
@@ -25,7 +27,7 @@ format: "hdf5"           # Feature file format. "npy" or "hdf5" is supported.
 ###########################################################
 #         GENERATOR NETWORK ARCHITECTURE SETTING          #
 ###########################################################
-generator_type: DiscreteSymbolF0Generator
+generator_type: DiscreteMRSymbolF0Generator
 generator_params:
     in_channels: 768                      # Number of input channels.
     out_channels: 1                       # Number of output channels.
@@ -49,10 +51,14 @@ generator_params:
     num_spk_embs: 0                       # Do not consider speaker embedding for single spk
     
     use_embedding_feats: false            # Whether to use continous embedding features from pre-trained model
-    use_weight_sum: false                 # Whether to use weighted sum for multi layer feats (multi layer)
-    layer_num: 12                         # Numbert of layers used (multi layer)
-    use_fix_weight: false                 # hether to frozen the weight in use_weight_sum (multi_layer, Residual Cluster)
-    use_f0: true                          # Whether to add additioal f0
+    use_weight_sum: true                  # Whether to use weighted sum for multi layer feats (multi layer)
+    layer_num: 3                         # Numbert of layers used (multi layer), layer_num = len(src_rs) + len(add_rs)
+    use_fix_weight: false                 # Whether to frozen the weight in use_weight_sum (multi_layer, Residual Cluster)
+    use_f0: false                          # Whether to add additioal f0
+    
+    use_multi_resolution: true            # Whether to use multi resolution feaure
+    src_rs: 20                            # Resolution for input token
+    add_rs: [40, 80]                      # Additional resolution for used token. (target resolution = src_rs + add_rs)
 
 ###########################################################
 #       DISCRIMINATOR NETWORK ARCHITECTURE SETTING        #
@@ -66,7 +72,7 @@ discriminator_params:
         stride: 2                          # Pooling stride.
         padding: 2                         # Padding size.
     scale_discriminator_params:
-        in_channels: 1                     # Number of input channels.
+        in_channels: 1                    # Number of input channels.
         out_channels: 1                    # Number of output channels.
         kernel_sizes: [15, 41, 5, 3]       # List of kernel sizes.
         channels: 128                      # Initial number of channels.
@@ -137,7 +143,7 @@ batch_max_steps: 10240      # Length of each audio in batch. Make sure dividable
 pin_memory: true            # Whether to pin memory in Pytorch DataLoader.
 num_workers: 0              # Number of workers in Pytorch DataLoader.
 remove_short_samples: false # Whether to remove samples the length of which are less than batch_max_steps.
-allow_cache: true           # Whether to allow cache in dataset. If true, it requires cpu memory.
+allow_cache: false           # Whether to allow cache in dataset. If true, it requires cpu memory.
 
 ###########################################################
 #             OPTIMIZER & SCHEDULER SETTING               #

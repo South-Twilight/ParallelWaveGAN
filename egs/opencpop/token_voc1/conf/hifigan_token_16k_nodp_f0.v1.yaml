@@ -48,11 +48,11 @@ generator_params:
     use_weight_norm: true                 # Whether to apply weight normalization.
     num_spk_embs: 0                       # Do not consider speaker embedding for single spk
     
-    use_embedding_feats: false            # Whether to use embedding feature of models
-    use_weight_sum: false                  # Whether to apply weight sum
-    layer_num: 12                         # Number of layers used
-    use_fix_weight: false                 # Whether to fix parameter of weight sum (for Residual cluster layer)
-    use_f0: true                          # Whether to use f0
+    use_embedding_feats: false            # Whether to use continous embedding features from pre-trained model
+    use_weight_sum: false                 # Whether to use weighted sum for multi layer feats (multi layer)
+    layer_num: 12                         # Numbert of layers used (multi layer)
+    use_fix_weight: false                 # hether to frozen the weight in use_weight_sum (multi_layer, Residual Cluster)
+    use_f0: true                          # Whether to add additioal f0
 
 ###########################################################
 #       DISCRIMINATOR NETWORK ARCHITECTURE SETTING        #

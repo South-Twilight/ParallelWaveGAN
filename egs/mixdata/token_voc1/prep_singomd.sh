@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2020 Tomoki Hayashi
+# Copyright 2024 Yuxun Tang
 #  MIT License (https://opensource.org/licenses/MIT)
 
 . ./cmd.sh || exit 1;
@@ -17,14 +17,16 @@ n_jobs=8      # number of parallel jobs in feature extraction
 conf=conf/hifigan_token_16k_nodp_f0.v1.yaml
 
 # directory path setting
-db_root=/data3/tyx/dataset/opencpop # direcotry including wavfiles (MODIFY BY YOURSELF)
+db_root=db_root # direcotry including wavfiles (MODIFY BY YOURSELF)
                           # each wav filename in the directory should be unique
-                          # e.g.
-                          # /path/to/database
-                          # ├── utt_1.wav
-                          # ├── utt_2.wav
-                          # │   ...
-                          # └── utt_N.wav
+                          # ├──  mixdata
+                          #    ├── path/to/database1
+                          #         ├── utt_1.wav
+                          #         ├── utt_2.wav
+                          #         │   ...
+                          #         └── utt_N.wav
+                          #    ├── path/to/database
+                          #    ...
 dumpdir=dump           # directory to dump features
 dumpdir_token=dump_token
 
@@ -54,14 +56,16 @@ subexp="exp"
 
 store_feature=false             # store model intermediate representation
 storedir=feat_store             # directory
-use_multi_resolution=false
 
 use_cluster_token=true
-num_threads=20      # number of cpu threads in learn_kmeans
 nclusters=1024
-cluster_dir=dump_cluster
+portion=1.0
+feature_type=emb
 
-skip_score=true
+use_multi_resolution=false
+rs_list=
+
+skip_score=false
 
 # shellcheck disable=SC1091
 . utils/parse_options.sh || exit 1;
@@ -202,8 +206,8 @@ if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
     [ -z "${checkpoint}" ] && checkpoint="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     outdir="${expdir}/wav/$(basename "${checkpoint}" .pkl)"
     pids=()
-    for name in "${eval_set}"; do
-    # for name in "${dev_set}" "${eval_set}"; do
+    for name in "${train_set}"; do
+    # for name in "${dev_set}" "${eval_set}" "${train_set}"; do
     (
         [ ! -e "${outdir}/${name}" ] && mkdir -p "${outdir}/${name}"
         [ "${n_gpus}" -gt 1 ] && n_gpus=1
@@ -223,7 +227,7 @@ if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
                 --outdir "${outdir}/${name}" \
                 --verbose "${verbose}" ${_opts}      
         echo "Successfully finished decoding of ${name} set."
-    ) &
+    ) & 
     pids+=($!)
     done
     i=0; for pid in "${pids[@]}"; do wait "${pid}" || ((++i)); done
@@ -233,117 +237,23 @@ fi
 
 if [ "${stage}" -le 4 ] && [ "${stop_stage}" -ge 4 ] && [ ${use_cluster_token} = true ]; then
     echo "Stage 4: Cluster embedding feature to obtain token feature (K-means)"
-    sub_stage=1 
-    sub_stop_stage=1
-    feat_dir=$dumpdir
+    
+    _opts=
 
-    if [ ${sub_stage} -le 1 ] && [ ${sub_stop_stage} -ge 1 ]; then
-        echo "sub-stage 1: Dump embedding feature"
-        mkdir -p ${cluster_dir}/data
-
-        if [ ${store_feature} == true ]; then
-            feat_dir=$storedir
-        fi
-
-        for name in "${train_set}" "${dev_set}" "${eval_set}"; do
-            mkdir -p ${cluster_dir}/data/${name}
-            > "${cluster_dir}/data/${name}/feats.scp"
-            > "${cluster_dir}/data/${name}/wav.scp"
-            find $feat_dir -type f -name "*.h5" -exec sh -c '
-                cluster_dir=$1
-                for file; do
-                    filename=$(basename "$file" .h5)
-                    echo "${filename} ${file}:feats" >> ${cluster_dir}/data/$name/feats.scp
-                    echo "${filename} wav_dump/${filename}.wav" >> ${cluster_dir}/data/$name/wav.scp
-                done
-            ' sh "${cluster_dir}" {} +
-        done
+    if [ ${store_feature} == true ]; then
+        _opts+="--featdir $storedir "
+    else
+        _opts+="--featdir $dumpdir "
     fi
 
-
-    skip_train=true
-    km_dir="${cluster_dir}/km_dir/${nclusters}_store${store_feature}"
-    portion=0.05
-
-    if [ ${sub_stage} -le 2 ] && [ ${sub_stop_stage} -ge 2 ] && [ "$skip_train" = false ];then
-        echo "sub-stage 2: Learn K-means with embedding feature based on scikit-learn"
-        mkdir -p $km_dir
-        _portion=${portion}
-        _dset="${train_set}"
-        if (( $(echo "${_portion} >= 1.0" | bc -l) )); then
-            cp ${cluster_dir}/data/${_dset}/feats.scp $km_dir/train.scp
-        else
-            nutt=$(<"${cluster_dir}/data/${_dset}"/feats.scp wc -l)
-            portion_nutt=$(echo ${nutt} ${_portion} | awk '{print(int($1 * $2)+1)}')
-
-            utils/subset_scp.pl \
-                ${portion_nutt} ${cluster_dir}/data/${_dset}/feats.scp \
-                > "${km_dir}/train.scp" || exit 1;
-            echo "Subsampling ${portion_nutt} utterances for Kmeans training."
-        fi
-        # It typically requires 120GB RAM to run kmeans steps.
-        ${train_cmd} --num_threads ${num_threads} ${km_dir}/log/learn_kmeans.log \
-        python3 utils/py_utils/learn_kmeans.py \
-            --km_path ${km_dir}/km_${nclusters}.mdl \
-            --n_clusters ${nclusters} \
-            --percent -1 \
-            --in_filetype hdf5 \
-            "scp:${km_dir}/train.scp" || exit 1;
-    fi
-
-    if [ ${sub_stage} -le 3 ] && [ ${sub_stop_stage} -ge 3 ];then
-        echo "sub-stage 3: Generate K-means pseudo-labels"
-        use_gpu=true
-        if ${use_gpu}; then
-            _cmd="${cuda_cmd} --gpu 1"
-        else
-            _cmd="${cpu_cmd}"
-        fi
-        > "${cluster_dir}/pseudo_labels_km${nclusters}.txt"
-        # for dset in "${dev_set}"; do
-        for dset in "${dev_set}" "${eval_set}" "${train_set}"; do
-            echo "Extract labels to ${cluster_dir}/data/$dset"
-            _dump_dir=${cluster_dir}/data/$dset
-
-            _opts=
-            _opts+="--in_filetype hdf5 "
-            mkdir -p "${_dump_dir}"/logdir
-
-            key="feats.scp"
-            _nj=4
-            nutt=$(<"${_dump_dir}"/${key} wc -l)
-            _nj=$((_nj<nutt?_nj:nutt))
-
-            key_file="${_dump_dir}"/${key}
-            split_scps=""
-            for n in $(seq ${_nj}); do
-                split_scps+=" ${_dump_dir}/logdir/inference_kmeans.${n}.scp"
-            done
-            utils/split_scp.pl "${key_file}" ${split_scps}
-            for n in $(seq ${_nj}); do
-                awk '(FILENAME==ARGV[1]){utt2num[$1]=$2} (FILENAME==ARGV[2]){print($1, utt2num[$1])}' \
-                    data/${dset}/utt2num_samples ${_dump_dir}/logdir/inference_kmeans.${n}.scp \
-                    > ${_dump_dir}/logdir/utt2num_samples.${n}
-            done
-
-            ${_cmd} JOB=1:${_nj} "${_dump_dir}"/logdir/inference_pseudo_labels_km${nclusters}.JOB.log \
-                python3 utils/py_utils/dump_km_label.py \
-                    ${_opts} \
-                    --km_path "${km_dir}/km_${nclusters}.mdl" \
-                    --out_filetype "mat" \
-                    --use_gpu ${use_gpu} \
-                    --utt2num_samples "${_dump_dir}/logdir/utt2num_samples.JOB" \
-                    "scp:${_dump_dir}/logdir/inference_kmeans.JOB.scp" \
-                    "ark,t:${_dump_dir}/logdir/pseudo_labels_km${nclusters}.JOB.txt" || exit 1;
-        done
-        
-        for dset in "${dev_set}" "${eval_set}" "${train_set}"; do
-            for n in $(seq ${_nj}); do
-                cat "${_dump_dir}"/logdir/pseudo_labels_km${nclusters}.${n}.txt || exit 1;
-            done | sed 's/ \[ \| \]//g' | sort -u > "${_dump_dir}"/pseudo_labels_km${nclusters}.txt || exit 1;
-            cat "${_dump_dir}"/pseudo_labels_km${nclusters}.txt >> "${cluster_dir}/pseudo_labels_km${nclusters}.txt"
-        done
-    fi
+    utils/perform_kmeans.sh \
+        --sub_stage 3 --sub_stop_stage 3 \
+        --feature_type ${feature_type} \
+        --conf ${conf} \
+        --nclusters ${nclusters} \
+        --portion ${portion} \
+        --use_multi_resolution ${use_multi_resolution} ${_opts}
+    
 else
     echo "Skip stage for clustering token"
 fi
@@ -398,4 +308,4 @@ else
     echo "Skip the evaluation stages"
 fi
 
-echo "Finished training and preprocessing for Adapter. Genereated token at ${cluster_dir}/pseudo_labels_km${nclusters}.txt"
+echo "Finished"

@@ -96,10 +96,10 @@ duration_loss_params:
     reduction: mean
 use_mel_loss: true   # Whether to use Mel-spectrogram loss.
 mel_loss_params:     # Mel-spectrogram loss parameters.
-    fs: 16000
-    fft_size: 1024
-    hop_size: 256
-    win_length: null
+    fs: 48000
+    fft_size: 2048
+    hop_size: 300
+    win_length: 2400
     window: "hann"
     num_mels: 80
     fmin: 0

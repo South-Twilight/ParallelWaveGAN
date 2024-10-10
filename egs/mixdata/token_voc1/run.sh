@@ -17,7 +17,7 @@ n_jobs=8      # number of parallel jobs in feature extraction
 conf=conf/hifigan_token_16k_nodp_f0.v1.yaml
 
 # directory path setting
-db_root=/data3/tyx/dataset/mixdata # direcotry including wavfiles (MODIFY BY YOURSELF)
+db_root=db_root # direcotry including wavfiles (MODIFY BY YOURSELF)
                           # each wav filename in the directory should be unique
                           # e.g.
                           # /path/to/database
@@ -26,6 +26,7 @@ db_root=/data3/tyx/dataset/mixdata # direcotry including wavfiles (MODIFY BY YOU
                           # │   ...
                           # └── utt_N.wav
 dumpdir=dump           # directory to dump features
+dumpdir_token=dump_token
 
 # training related setting
 tag=""     # tag for directory to save model
@@ -43,17 +44,16 @@ eval_set="test"         # name of evaluation data direcotry
 
 token_text=""
 
-use_multi_resolution=false
-store_feature=false
-storedir=feat_store
-
 use_f0=false                    # whether to add f0 
-use_embedding_feats=true      # whether to use pretrain feature as input
+use_embedding_feats=false      # whether to use pretrain feature as input
 pretrained_model="facebook/hubert-base-ls960"      # pre-trained model (confirm it on Huggingface)
-use_multi_layer=true
+use_multi_layer=false
 emb_layer=6
+
 fs=16000
-subexp="exp"
+subexp=exp
+
+use_multi_resolution_token=false
 
 # shellcheck disable=SC1091
 . utils/parse_options.sh || exit 1;
@@ -119,10 +119,30 @@ fi
 
 if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
     echo "Stage 1: Feature extraction"
+    if [ ! -e "${token_text}" ]; then
+        echo "Valid --token_text is not provided. Please prepare it by yourself."        
+        echo "--token_text have 2 kinds of input: path of token_text file / path of token files directory."
+        cat << EOF
+---------------------------------
+token_text file: like kaldi-style text as follows:
+utt_id_1 0 0 0 0 1 1 1 1 2 2 2 2
+utt_id_2 0 0 0 0 0 0 3 3 3 3 3 3 5 5 5 5
+...
+----------------------------------
+token files directory: token_text files described above
+It will run in multi-stream way, training set should update in conf/hifigan_token_16k_nodp_f0.v1.yaml.
+token files directory format as follows:
+token_dir/
+    - token_file(layer1)
+    - token_file(layer2)
+    ....
+EOF
+        exit 1
+    fi
     # extract raw features
     pids=()
     for name in "${train_set}" "${dev_set}" "${eval_set}"; do
-    # for name in "${train_set}"; do
+    # for name in "${eval_set}"; do
     (
         [ ! -e "${dumpdir}/${name}/raw" ] && mkdir -p "${dumpdir}/${name}/raw"
         echo "Feature extraction start. See the progress via ${dumpdir}/${name}/raw/preprocessing.*.log."
@@ -140,6 +160,9 @@ if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
             _opts+="--pretrained-model ${pretrained_model} "
             _opts+="--emb-layer ${emb_layer} "
         fi
+        if [ $use_multi_resolution_token == true ]; then
+            _opts+="--use-multi-resolution-token "
+        fi
 
         # preprocess embedding feature instead of token
         ${train_cmd} JOB=1:${n_jobs} "${dumpdir}/${name}/raw/preprocessing.JOB.log" \
@@ -147,6 +170,7 @@ if [ "${stage}" -le 1 ] && [ "${stop_stage}" -ge 1 ]; then
                 --config "${conf}" \
                 --scp "${dumpdir}/${name}/raw/wav.JOB.scp" \
                 --dumpdir "${dumpdir}/${name}/raw/dump.JOB" \
+                --text "${token_text}" \
                 --verbose "${verbose}" ${_opts}
         echo "Successfully finished feature extraction of ${name} set."
     ) &
@@ -171,13 +195,15 @@ if [ "${stage}" -le 2 ] && [ "${stop_stage}" -ge 2 ]; then
     else
         train="parallel-wavegan-train"
     fi
+    
     _opts=
     if [ ${use_f0} == true ]; then
         _opts+="--use-f0 "
     fi
-    if [ ${use_multi_resolution} == "true" ]; then
-        _opts+="--use-multi-resolution "
+    if [ $use_multi_resolution_token == true ]; then
+        _opts+="--use-multi-resolution-token "
     fi
+
     # shellcheck disable=SC2012
     resume="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     echo "Training start. See the progress via ${expdir}/train.log."
@@ -198,20 +224,21 @@ if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
     [ -z "${checkpoint}" ] && checkpoint="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     outdir="${expdir}/wav/$(basename "${checkpoint}" .pkl)"
     pids=()
-    for name in "${train_set}"; do
+    for name in "${eval_set}"; do
     # for name in "${dev_set}" "${eval_set}"; do
     (
         [ ! -e "${outdir}/${name}" ] && mkdir -p "${outdir}/${name}"
         [ "${n_gpus}" -gt 1 ] && n_gpus=1
         echo "Decoding start. See the progress via ${outdir}/${name}/decode.log."
+
         _opts=
         if [ ${use_f0} == true ]; then
             _opts+="--use-f0 "
         fi
-        if [ ${store_feature} == true ]; then
-            _opts+="--store-feature "
-            _opts+="--storedir ${storedir}/${name} "
+        if [ $use_multi_resolution_token == true ]; then
+            _opts+="--use-multi-resolution-token "
         fi
+
         ${cuda_cmd} --gpu "${n_gpus}" "${outdir}/${name}/decode.log" \
             parallel-wavegan-decode \
                 --dumpdir "${dumpdir}/${name}/raw" \

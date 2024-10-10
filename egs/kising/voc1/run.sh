@@ -41,7 +41,7 @@ set -euo pipefail
 
 if [ "${stage}" -le -1 ] && [ "${stop_stage}" -ge -1 ]; then
     echo "Stage -1: Data download"
-    if [ ! -e "${download_dir}/KiSing" ]; then
+    if [ ! -e "${download_dir}" ]; then
     	echo "ERROR: KiSing data does not exist."
     	echo "ERROR: Please download http://shijt.site/index.php/2021/05/16/kising-the-first-open-source-mandarin-singing-voice-synthesis-corpus"
         echo  "and locate it at ${download_dir}"
@@ -53,7 +53,7 @@ if [ "${stage}" -le 0 ] && [ "${stop_stage}" -ge 0 ]; then
     echo "Stage 0: Data preparation"
     mkdir -p wav_dump
     # we convert the music score to midi format
-    python local/data_prep.py "${KISING}" \
+    python local/data_prep.py "${download_dir}" \
         --wav_dumpdir wav_dump \
         --sr 24000
 
