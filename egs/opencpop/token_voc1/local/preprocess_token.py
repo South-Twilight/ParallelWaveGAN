@@ -192,7 +192,7 @@ def main():
         help="whether to input multi resolution token.",
     )
     parser.add_argument(
-        "--emb-layer",
+        "--feat-layer",
         type=int,
         default=1,
         help="all layer numbert or specific layer",
@@ -205,7 +205,6 @@ def main():
     )
     parser.add_argument(
         "--skip_existed_file",
-        type=str,
         default=False,
         action="store_true"
     )
@@ -357,7 +356,7 @@ def main():
                     mel = mel.reshape(-1, 1)
                 # mel input as (T, 1)
                 if args.use_multi_layer:
-                    mel = mel.reshape(-1, args.emb_layer + 1)
+                    mel = mel.reshape(-1, args.feat_layer)
             else:
                 #NOTE(Yuxun): source resolution is the finest grained 
                 resolution = config['generator_params']['resolution']

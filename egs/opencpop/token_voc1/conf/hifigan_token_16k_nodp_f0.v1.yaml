@@ -49,8 +49,8 @@ generator_params:
     num_spk_embs: 0                       # Do not consider speaker embedding for single spk
     
     use_embedding_feats: false            # Whether to use continous embedding features from pre-trained model
-    use_weight_sum: false                 # Whether to use weighted sum for multi layer feats (multi layer)
-    layer_num: 12                         # Numbert of layers used (multi layer)
+    use_weight_sum: true                 # Whether to use weighted sum for multi layer feats (multi layer)
+    layer_num: 3                         # Numbert of layers used (multi layer)
     use_fix_weight: false                 # hether to frozen the weight in use_weight_sum (multi_layer, Residual Cluster)
     use_f0: true                          # Whether to add additioal f0
 

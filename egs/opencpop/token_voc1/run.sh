@@ -47,7 +47,7 @@ use_f0=false                   # Whether to add additioal f0
 use_embedding_feats=false      # Whether to use continous embedding features from pre-trained model
 pretrained_model="facebook/hubert-base-ls960"      # pre-trained model used (confirm it on Huggingface)
 use_multi_layer=false          # Whether to use multi layer
-emb_layer=6                    # Number of total layers for multi layer, specific layer for single layer.
+feat_layer=3                    # Number of total layers for multi layer, specific layer for single layer.
 
 fs=16000
 subexp=exp
@@ -131,11 +131,12 @@ EOF
         fi
         if [ "${use_multi_layer}" = true ]; then
             _opts+="--use-multi-layer "
+            _opts+="--feat-layer ${feat_layer} "
         fi
         if [ "${use_embedding_feats}" = true ]; then
             _opts+="--use-embedding-feats "
             _opts+="--pretrained-model ${pretrained_model} "
-            _opts+="--emb-layer ${emb_layer} "
+            _opts+="--feat-layer ${feat_layer} "
         fi
         if [ "${use_multi_resolution_token}" = true ]; then
             _opts+="--use-multi-resolution-token "
@@ -148,7 +149,6 @@ EOF
                 --scp "${dumpdir}/${name}/raw/wav.JOB.scp" \
                 --dumpdir "${dumpdir}/${name}/raw/dump.JOB" \
                 --text "${token_text}" \
-                --skip_existed_file \
                 --verbose "${verbose}" \
                 ${_opts}
         echo "Successfully finished feature extraction of ${name} set."

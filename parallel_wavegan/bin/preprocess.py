@@ -347,6 +347,11 @@ def main():
 
     # process each data
     for utt_id, (audio, fs) in tqdm(dataset):
+        
+        if os.path.exists(os.path.join(args.dumpdir, f"{utt_id}.h5")):
+            logging.info(f'skip {utt_id}')
+            continue
+        
         # check
         assert len(audio.shape) == 1, f"{utt_id} seems to be multi-channel signal."
         assert (
@@ -445,7 +450,7 @@ def main():
         if config["global_gain_scale"] > 0.0:
             audio *= config["global_gain_scale"]
         if np.abs(audio).max() >= 1.0:
-            logging.warn(
+            logging.warning(
                 f"{utt_id} causes clipping. "
                 "it is better to re-consider global gain scale."
             )

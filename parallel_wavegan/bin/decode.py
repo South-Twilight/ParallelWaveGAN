@@ -339,10 +339,10 @@ def main():
                         "PCM_16",
                     )
 
-        # report average RTF
-        logging.info(
-            f"Finished generation of {idx} utterances (RTF = {total_rtf / idx:.03f})."
-        )
+                # report average RTF
+                logging.info(
+                    f"Finished generation of {idx} utterances (RTF = {total_rtf / idx:.03f})."
+                )
     else:
         ############################
         #      VQ-WAV2WAV CASE     #
