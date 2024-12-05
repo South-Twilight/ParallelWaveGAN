@@ -198,6 +198,19 @@ def main():
         help="all layer numbert or specific layer",
     )
     parser.add_argument(
+        "--multi-token-files",
+        type=str,
+        default="",
+        help="list of token files in multi token pattern",
+    )
+    # parser.add_argument(
+    #     "--multi-token-mix-type",
+    #     type=str,
+    #     default="sequence",
+    #     help="token mix type in multi token pattern",
+    #     choices=["sequence", "frame"],
+    # )
+    parser.add_argument(
         "--pretrained-model",
         type=str,
         default="facebook/hubert-base-ls960",
@@ -266,16 +279,19 @@ def main():
             }
         else:  # multi-stream: directory of token files
             text = {}
-            for fname in os.listdir(args.text):
+            token_files = args.multi_token_files.split(" ")
+            for fname in token_files:
                 fpath = os.path.join(args.text, fname)
-                with open(fpath, 'r') as f:
-                    lines = [line.strip() for line in f.readlines()]
-                for line in lines:
-                    utt_name, tokens = line.split(maxsplit=1) # name, list
-                    tokens = tokens.split() 
-                    if text.get(utt_name) is None:
-                        text[utt_name] = []
-                    text[utt_name].append(tokens)                    
+                if not os.path.exists(fpath):
+                    raise FileExistsError(f"{fpath} does not exist.")
+                with open(fpath, 'r', encoding="utf-8") as f:
+                    for line in f:
+                        utt_name, tokens = line.strip().split(maxsplit=1) # name, list
+                        tokens = tokens.split() 
+                        if text.get(utt_name) is None:
+                            text[utt_name] = []
+                        # combine in sequence way, [T]
+                        text[utt_name].append(tokens)                    
 
     # load spk2utt file
     if args.utt2spk is not None:
@@ -347,17 +363,7 @@ def main():
                 mel = features[args.emb_layer].squeeze(0).cpu().detach().numpy()
                 # Output mel as (T, C) 
         else:
-            if not args.use_multi_resolution_token:
-                # use hubert index instead of mel
-                mel = np.array(text[utt_id]).astype(np.int64)
-                if mel.ndim > 1: 
-                    mel = mel.transpose(1, 0)
-                else:
-                    mel = mel.reshape(-1, 1)
-                # mel input as (T, 1)
-                if args.use_multi_layer:
-                    mel = mel.reshape(-1, args.feat_layer)
-            else:
+            if args.use_multi_resolution_token:
                 #NOTE(Yuxun): source resolution is the finest grained 
                 resolution = config['generator_params']['resolution']
                 resolution = sorted(resolution)
@@ -367,18 +373,29 @@ def main():
                     rs_token = [rs_token]
                 rs_token = sorted(rs_token, key=len, reverse=True)
                 mel = np.array(rs_token[0]).astype(np.int64)
+            else:
+                # use hubert index instead of mel
+                mel = np.array(text[utt_id]).astype(np.int64) # [L, T], 'sequence'
+                if mel.ndim > 1: 
+                    mel = mel.transpose(1, 0)
+                else:
+                    mel = mel.reshape(-1, 1)
+                # mel input as (T, 1)
+                # NOTE(Yuxun): add mix_type for multi token, mel is under 'frame' type here.
+                if args.use_multi_layer:
+                    mel = mel.reshape(-1, args.feat_layer) # [T, L]
                 
         logging.info(f'mel({mel.shape})')
         # logging.info(f'mel: {mel}')
         
         if args.spk2idx is not None:
             if args.use_multi_resolution_token:
-                logging.warn("It doesn't support speaker embedding now when using multi reoslution features.")
+                logging.warning("It doesn't support speaker embedding now when using multi reoslution features.")
             spk = utt2spk[utt_id]
             if spk in spk2idx:
                 idx = spk2idx[spk]
             else:
-                logging.warn(f"{spk} is unknown speaker.")
+                logging.warning(f"{spk} is unknown speaker.")
                 max_idx = max(spk2idx.values()) + 1
                 idx = max_idx
 
@@ -399,6 +416,11 @@ def main():
         mel = mel[: len(audio) // config["hop_size"]]
         audio = audio[: len(mel) * config["hop_size"]]
         assert len(mel) * config["hop_size"] == len(audio)
+
+        # if args.multi_token_mix_type == "frame":
+        #     mel = mel
+        # elif args.mult_token_mix_tpe == "sequence":
+        #     mel = mel.transpose(1, 0)
         
         # use f0
         if args.use_f0:
@@ -417,7 +439,7 @@ def main():
         if config["global_gain_scale"] > 0.0:
             audio *= config["global_gain_scale"]
         if np.abs(audio).max() >= 1.0:
-            logging.warn(
+            logging.warning(
                 f"{utt_id} causes clipping. "
                 "it is better to re-consider global gain scale."
             )

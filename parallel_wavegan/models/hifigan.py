@@ -1476,7 +1476,7 @@ class DiscreteSymbolF0Generator(DiscreteSymbolHiFiGANGenerator):
         """Perform inference.
 
         Args:
-            c (Union[Tensor, ndarray]): Input tensor token: (T, 2) or (T, 1) or (T, L).
+            c (Union[Tensor, ndarray]): Input tensor token: (T, 2) or (T, 1) or (T, L). "frame" token in multi layer
                                         embedding feature: (T, L, C)
             f0 (Tensor): Input f0 (T,).
         Returns:

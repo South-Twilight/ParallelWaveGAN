@@ -41,7 +41,10 @@ train_set="train"       # name of training data directory
 dev_set="dev"           # name of development data direcotry
 eval_set="test"         # name of evaluation data direcotry
 
-token_text=""
+token_text=""           # if `token_text` is path of file, it will be single token pattern.
+                        # if `token_text` is path of directory, it will be multi token pattern.
+multi_token_files=""    # list of multi token (only used in multi token pattern)
+# multi_token_mix_type="sequence" # ["sequence", "frame"], mix type of multi token
 
 use_f0=false                   # Whether to add additioal f0 
 use_embedding_feats=false      # Whether to use continous embedding features from pre-trained model
@@ -132,6 +135,8 @@ EOF
         if [ "${use_multi_layer}" = true ]; then
             _opts+="--use-multi-layer "
             _opts+="--feat-layer ${feat_layer} "
+            _opts+="--multi-token-files \"${multi_token_files}\" "
+            # _opts+="--multi-token-mix-type ${multi_token_mix_type} "
         fi
         if [ "${use_embedding_feats}" = true ]; then
             _opts+="--use-embedding-feats "
@@ -204,7 +209,8 @@ if [ "${stage}" -le 3 ] && [ "${stop_stage}" -ge 3 ]; then
     [ -z "${checkpoint}" ] && checkpoint="$(ls -dt "${expdir}"/*.pkl | head -1 || true)"
     outdir="${expdir}/wav/$(basename "${checkpoint}" .pkl)"
     pids=()
-    for name in "${dev_set}" "${eval_set}"; do
+    # for name in "${dev_set}" "${eval_set}"; do
+    for name in "${eval_set}"; do
     (
         [ ! -e "${outdir}/${name}" ] && mkdir -p "${outdir}/${name}"
         [ "${n_gpus}" -gt 1 ] && n_gpus=1
