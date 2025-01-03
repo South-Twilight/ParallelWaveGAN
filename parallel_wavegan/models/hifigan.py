@@ -1483,7 +1483,7 @@ class DiscreteSymbolF0Generator(DiscreteSymbolHiFiGANGenerator):
             Tensor: Output tensor (T ** prod(upsample_scales), out_channels).
 
         """
-        # logging.info(f'c: {c.shape}')
+        # logging.info(f'hifigan_infer: c({c.shape}): {c}')
         assert not normalize_before, "No statistics are used."
         if not isinstance(c, torch.Tensor):
             c = torch.tensor(c, dtype=torch.long).to(next(self.parameters()).device)
@@ -1497,7 +1497,7 @@ class DiscreteSymbolF0Generator(DiscreteSymbolHiFiGANGenerator):
         if not self.use_embedding_feats:
             if self.num_spk_embs <= 0 and not self.use_weight_sum:
                 c = c[:, 0:1]
-        
+
         c = self.forward(c.unsqueeze(0).transpose(1, 2), f0, store_feature)
         if store_feature:
             return c

@@ -268,16 +268,18 @@ def main():
             return_sampling_rate=True,
         )
 
+    # Only for discrete token, load discrete files
     if args.use_embedding_feats is False:
-        # get token single layer / multi layer
         logging.info(f'path: {args.text}')
-        if not os.path.isdir(args.text): # single layer token file
+        if not args.multi_token_files:
+            # NOTE(Yuxun): load single layer token file, `args.text` will path of the token file
             with open(args.text) as f:
                 lines = [line.strip() for line in f.readlines()]
             text = {
                 line.split(maxsplit=1)[0]: line.split(maxsplit=1)[1].split() for line in lines
             }
-        else:  # multi-stream: directory of token files
+        else: 
+            # NOTE(Yuxun): load multi layer token file, `args.text` will path of files directory
             text = {}
             token_files = args.multi_token_files.split(" ")
             for fname in token_files:
@@ -290,8 +292,8 @@ def main():
                         tokens = tokens.split() 
                         if text.get(utt_name) is None:
                             text[utt_name] = []
-                        # combine in sequence way, [T]
-                        text[utt_name].append(tokens)                    
+                        # combine in sequence way, [L, T]
+                        text[utt_name].append(tokens)
 
     # load spk2utt file
     if args.utt2spk is not None:
@@ -332,18 +334,16 @@ def main():
                 hop_length=config["trim_hop_size"],
             )
         
-        # use feature embedding(for teacher-forcing)
         if args.use_embedding_feats:
-            os.environ["http_proxy"] = "http://127.0.0.1:7890"
-            os.environ["https_proxy"] = "http://127.0.0.1:7890"
+            # Case: intermediate feature will be continout embedding features (for teacher-forcing)
             from transformers import AutoModel, Wav2Vec2FeatureExtractor
             pretrained_model = args.pretrained_model
-            logging.info(f'model: {pretrained_model}')
+            logging.info(f'loading preatrined model: {pretrained_model}')
             model = AutoModel.from_pretrained(pretrained_model)
             processor = Wav2Vec2FeatureExtractor.from_pretrained(pretrained_model) 
-            
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model.to(device)
+
             inputs = processor(audio, sampling_rate=fs, return_tensors="pt")
             def move_to_device(dict, device):
                 for key in dict:
@@ -354,17 +354,21 @@ def main():
                 outputs = model(**inputs, output_hidden_states=True)
             
             features = outputs.hidden_states
+
+            # Whether to use multi layer
             if args.use_multi_layer:
+                # In multi layer, `emb_layer` will specify as number of layers used.
                 mel = torch.stack(features[: args.emb_layer + 1], 0)
-                # mel input as (L, 1, T, C)
+                # (L, 1, T, C) -> (T, L, C)
                 mel = mel.squeeze(1).transpose(0, 1).cpu().detach().numpy()
-                # Output mel as (T, L, C)
             else:
+                # In single layer, `emb_layer` will specify as the layer id used.
                 mel = features[args.emb_layer].squeeze(0).cpu().detach().numpy()
                 # Output mel as (T, C) 
         else:
+            # Case: intermediate feature will be discrete token. Index of discrete dict is used as mel.
             if args.use_multi_resolution_token:
-                #NOTE(Yuxun): source resolution is the finest grained 
+                # multi resolution for SingOMD, source resolution is the finest grained.
                 resolution = config['generator_params']['resolution']
                 resolution = sorted(resolution)
                 logging.info(f'Origin resolution of feature is {resolution[0]}')
@@ -374,16 +378,16 @@ def main():
                 rs_token = sorted(rs_token, key=len, reverse=True)
                 mel = np.array(rs_token[0]).astype(np.int64)
             else:
-                # use hubert index instead of mel
-                mel = np.array(text[utt_id]).astype(np.int64) # [L, T], 'sequence'
-                if mel.ndim > 1: 
+                # normal discrete token
+                mel = np.array(text[utt_id]).astype(np.int64) # [L, T] in 'sequence' / [T]
+                if args.use_multi_layer: 
+                    # multi layer, transfer mix type from 'sequence' to 'frame. [L, T] -> [T, L]
                     mel = mel.transpose(1, 0)
+                    mel = mel.reshape(-1, args.feat_layer)
                 else:
+                    # single layer, [T] -> [T, 1]
                     mel = mel.reshape(-1, 1)
-                # mel input as (T, 1)
-                # NOTE(Yuxun): add mix_type for multi token, mel is under 'frame' type here.
-                if args.use_multi_layer:
-                    mel = mel.reshape(-1, args.feat_layer) # [T, L]
+                # output mel as [T, L]
                 
         logging.info(f'mel({mel.shape})')
         # logging.info(f'mel: {mel}')

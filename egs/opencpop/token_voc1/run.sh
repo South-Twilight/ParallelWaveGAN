@@ -149,7 +149,7 @@ EOF
 
         # preprocess embedding feature instead of token
         ${train_cmd} JOB=1:${n_jobs} "${dumpdir}/${name}/raw/preprocessing.JOB.log" \
-            local/preprocess_token.py \
+            ../../../parallel_wavegan/bin/preprocess_token.py \
                 --config "${conf}" \
                 --scp "${dumpdir}/${name}/raw/wav.JOB.scp" \
                 --dumpdir "${dumpdir}/${name}/raw/dump.JOB" \
