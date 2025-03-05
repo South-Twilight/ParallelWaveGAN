@@ -1,5 +1,7 @@
 # SingOMD: Singing Oriented Multi-resolution Discrete Representation Construction from Speech Models
 
+_IMPORTANT INFO_: [SingOMD](https://arxiv.org/abs/2406.08905) is accepted by **Interspeech 2024**.
+
 ### How to Run?
 
 In `prep_singomd.sh`, we will firstly train the adapter model (called `am1` for convenience) using embedding feature from `pretrained_model`.
@@ -8,7 +10,7 @@ Then, we will extract multi-resolution embedding features from `am1` model and c
 
 Finally, the extracted SingOMD tokens will be tested.
 
-More details about it can be found in our paper https://arxiv.org/abs/2406.08905
+More details about it can be found in our paper https://arxiv.org/abs/2406.08905.
 
 Details of each stage in `run.sh` are shown below.
 
@@ -60,4 +62,14 @@ Then, just run the unit hifigan to synthesis singing waveform from discrets toke
 --use_f0 false \
 --use_embedding_feats false \
 --use_multi_resolution true 
+```
+
+## Citation
+```
+@inproceedings{tang2024singomd,
+    title={SingOMD: Singing Oriented Multi-resolution Discrete Representation Construction from Speech Models}, 
+    author={Yuxun Tang and Yuning Wu and Jiatong Shi and Qin Jin},
+    year={2024},
+    booktitle={Interspeech},
+}
 ```
